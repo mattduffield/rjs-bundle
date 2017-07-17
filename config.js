@@ -31,7 +31,6 @@ require.config({
     "babel": "node_modules/requirejs-babel/babel-5.8.34.min",
     //"i18next": "node_modules/i18next/dist/umd/i18next.min",
     // "breeze": "node_modules/breeze-client/build/breeze.min"
-    "azure-storage": "node_modules/azure-storage/lib/azure-storage",
     "x2js": "node_modules/x2js/x2js",
   },
   packages: [
