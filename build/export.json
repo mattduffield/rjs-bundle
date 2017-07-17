@@ -16,8 +16,6 @@
 
     "node_modules/i18next/dist/umd/i18next.min.js",
 
-    "node_modules/xmlToJSON/lib/xmlToJSON.js",
-
     "node_modules/aurelia-breeze/dist/amd/*",
     "node_modules/aurelia-fetch-client/dist/amd/*",
     "node_modules/aurelia-http-client/dist/amd/*",
