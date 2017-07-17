@@ -23226,248 +23226,738 @@ define('aurelia-validation/aurelia-validation',["require", "exports", "./get-tar
 
 define('aurelia-validation', ['aurelia-validation/aurelia-validation'], function (main) { return main; });
 
-/* Copyright 2015 William Summers, MetaTribal LLC
- * adapted from https://developer.mozilla.org/en-US/docs/JXON
- *
- * Licensed under the MIT License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     https://opensource.org/licenses/MIT
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/**
- * @author William Summers
- *
- */
- 
-var xmlToJSON = (function () {
+/*
+	Copyright 2015 Axinom
+	Copyright 2011-2013 Abdulla Abdurakhmanov
+	Original sources are available at https://code.google.com/p/x2js/
 
-    this.version = "1.3";
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
 
-    var options = { // set up the default options
-        mergeCDATA: true, // extract cdata and merge with text
-        grokAttr: true, // convert truthy attributes to boolean, etc
-        grokText: true, // convert truthy text/attr to boolean, etc
-        normalize: true, // collapse multiple spaces to single space
-        xmlns: true, // include namespaces as attribute in output
-        namespaceKey: '_ns', // tag name for namespace objects
-        textKey: '_text', // tag name for text nodes
-        valueKey: '_value', // tag name for attribute values
-        attrKey: '_attr', // tag for attr groups
-        cdataKey: '_cdata', // tag for cdata nodes (ignored if mergeCDATA is true)
-        attrsAsObject: true, // if false, key is used as prefix to name, set prefix to '' to merge children and attrs.
-        stripAttrPrefix: true, // remove namespace prefixes from attributes
-        stripElemPrefix: true, // for elements of same name in diff namespaces, you can enable namespaces and access the nskey property
-        childrenAsArray: true // force children into arrays
-    };
+	http://www.apache.org/licenses/LICENSE-2.0
 
-    var prefixMatch = new RegExp(/(?!xmlns)^.*:/);
-    var trimMatch = new RegExp(/^\s+|\s+$/g);
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
 
-    this.grokType = function (sValue) {
-        if (/^\s*$/.test(sValue)) {
-            return null;
-        }
-        if (/^(?:true|false)$/i.test(sValue)) {
-            return sValue.toLowerCase() === "true";
-        }
-        if (isFinite(sValue)) {
-            return parseFloat(sValue);
-        }
-        return sValue;
-    };
+/*
+	Supported export methods:
+	* AMD
+	* <script> (window.X2JS)
+	* Node.js
 
-    this.parseString = function (xmlString, opt) {
-        return this.parseXML(this.stringToXML(xmlString), opt);
-    }
+	Limitations:
+	* Attribute namespace prefixes are not parsed as such.
+	* Overall the serialization/deserializaton code is "best effort" and not foolproof.
+*/
 
-    this.parseXML = function (oXMLParent, opt) {
+// Module definition pattern used is returnExports from https://github.com/umdjs/umd
+(function (root, factory) {
+	"use strict";
 
-        // initialize options
-        for (var key in opt) {
-            options[key] = opt[key];
-        }
+	/* global define */
+    if (typeof define === 'function' && define.amd) {
+        // AMD. Register as an anonymous module.
+        define('x2js',[], factory);
+    } else if (typeof module === 'object' && module.exports) {
+        // Node. Does not work with strict CommonJS, but only CommonJS-like
+		// environments that support module.exports, like Node.
+        module.exports = factory(require("xmldom").DOMParser);
+    } else {
+        // Browser globals (root is window)
+        root.X2JS = factory();
+	}
+})(this, function (CustomDOMParser) {
+	"use strict";
 
-        var vResult = {},
-            nLength = 0,
-            sCollectedTxt = "";
+    // We return a constructor that can be used to make X2JS instances.
+    return function X2JS(config) {
+		var VERSION = "3.1.1";
 
-        // parse namespace information
-        if (options.xmlns && oXMLParent.namespaceURI) {
-            vResult[options.namespaceKey] = oXMLParent.namespaceURI;
-        }
+		config = config || {};
 
-        // parse attributes
-        // using attributes property instead of hasAttributes method to support older browsers
-        if (oXMLParent.attributes && oXMLParent.attributes.length > 0) {
-            var vAttribs = {};
+		function initConfigDefaults() {
+			// If set to "property" then <element>_asArray will be created
+			// to allow you to access any element as an array (even if there is only one of it).
+			config.arrayAccessForm = config.arrayAccessForm || "none";
 
-            for (nLength; nLength < oXMLParent.attributes.length; nLength++) {
-                var oAttrib = oXMLParent.attributes.item(nLength);
-                vContent = {};
-                var attribName = '';
+			// If "text" then <empty></empty> will be transformed to "".
+			// If "object" then <empty></empty> will be transformed to {}.
+			config.emptyNodeForm = config.emptyNodeForm || "text";
 
-                if (options.stripAttrPrefix) {
-                    attribName = oAttrib.name.replace(prefixMatch, '');
+			// Allows attribute values to be converted on the fly during parsing to objects.
+			// 	"test": function(name, value) { return true; }
+			//	"convert": function(name, value) { return parseFloat(value);
+			// convert() will be called for every attribute where test() returns true
+			// and the return value from convert() will replace the original value of the attribute.
+			config.attributeConverters = config.attributeConverters || [];
 
-                } else {
-                    attribName = oAttrib.name;
-                }
+			// Any elements that match the paths here will have their text parsed
+			// as an XML datetime value (2011-11-12T13:00:00-07:00 style).
+			// The path can be a plain string (parent.child1.child2),
+			// a regex (/.*\.child2/) or function(elementPath).
+			config.datetimeAccessFormPaths = config.datetimeAccessFormPaths || [];
 
-                if (options.grokAttr) {
-                    vContent[options.valueKey] = this.grokType(oAttrib.value.replace(trimMatch, ''));
-                } else {
-                    vContent[options.valueKey] = oAttrib.value.replace(trimMatch, '');
-                }
+			// Any elements that match the paths listed here will be stored in JavaScript objects
+			// as arrays even if there is only one of them. The path can be a plain string
+			// (parent.child1.child2), a regex (/.*\.child2/) or function(elementName, elementPath).
+			config.arrayAccessFormPaths = config.arrayAccessFormPaths || [];
 
-                if (options.xmlns && oAttrib.namespaceURI) {
-                    vContent[options.namespaceKey] = oAttrib.namespaceURI;
-                }
+			// If true, a toString function is generated to print nodes containing text or cdata.
+			// Useful if you want to accept both plain text and CData as equivalent inputs.
+			if (config.enableToStringFunc === undefined) {
+				config.enableToStringFunc = true;
+			}
 
-                if (options.attrsAsObject) { // attributes with same local name must enable prefixes
-                    vAttribs[attribName] = vContent;
-                } else {
-                    vResult[options.attrKey + attribName] = vContent;
-                }
-            }
+			// If true, empty text tags are ignored for elements with child nodes.
+			if (config.skipEmptyTextNodesForObj === undefined) {
+				config.skipEmptyTextNodesForObj = true;
+			}
 
-            if (options.attrsAsObject) {
-                vResult[options.attrKey] = vAttribs;
-            } else {}
-        }
+			// If true, whitespace is trimmed from text nodes.
+			if (config.stripWhitespaces === undefined) {
+				config.stripWhitespaces = true;
+			}
 
-        // iterate over the children
-        if (oXMLParent.hasChildNodes()) {
-            for (var oNode, sProp, vContent, nItem = 0; nItem < oXMLParent.childNodes.length; nItem++) {
-                oNode = oXMLParent.childNodes.item(nItem);
+			// If true, double quotes are used in generated XML.
+			if (config.useDoubleQuotes === undefined) {
+				config.useDoubleQuotes = true;
+			}
 
-                if (oNode.nodeType === 4) {
-                    if (options.mergeCDATA) {
-                        sCollectedTxt += oNode.nodeValue;
-                    } else {
-                        if (vResult.hasOwnProperty(options.cdataKey)) {
-                            if (vResult[options.cdataKey].constructor !== Array) {
-                                vResult[options.cdataKey] = [vResult[options.cdataKey]];
-                            }
-                            vResult[options.cdataKey].push(oNode.nodeValue);
+			// If true, the root element of the XML document is ignored when converting to objects.
+			// The result will directly have the root element's children as its own properties.
+			if (config.ignoreRoot === undefined) {
+				config.ignoreRoot = false;
+			}
 
-                        } else {
-                            if (options.childrenAsArray) {
-                                vResult[options.cdataKey] = [];
-                                vResult[options.cdataKey].push(oNode.nodeValue);
-                            } else {
-                                vResult[options.cdataKey] = oNode.nodeValue;
-                            }
-                        }
-                    }
-                } /* nodeType is "CDATASection" (4) */
-                else if (oNode.nodeType === 3) {
-                    sCollectedTxt += oNode.nodeValue;
-                } /* nodeType is "Text" (3) */
-                else if (oNode.nodeType === 1) { /* nodeType is "Element" (1) */
+			// Whether XML characters in text are escaped when reading/writing XML.
+			if (config.escapeMode === undefined) {
+				config.escapeMode = true;
+			}
 
-                    if (nLength === 0) {
-                        vResult = {};
-                    }
+			// Prefix to use for properties that are created to represent XML attributes.
+			if (config.attributePrefix === undefined) {
+				config.attributePrefix = "_";
+			}
 
-                    // using nodeName to support browser (IE) implementation with no 'localName' property
-                    if (options.stripElemPrefix) {
-                        sProp = oNode.nodeName.replace(prefixMatch, '');
-                    } else {
-                        sProp = oNode.nodeName;
-                    }
+			// If true, empty elements will created as self closing elements (<element />)
+			// If false, empty elements will be created with start and end tags (<element></element>)
+			if (config.selfClosingElements === undefined) {
+				config.selfClosingElements = true;
+			}
 
-                    vContent = xmlToJSON.parseXML(oNode);
+			// If this property defined as false and an XML element has CData node ONLY, it will be converted to text without additional property "__cdata"
+			if (config.keepCData === undefined) {
+				config.keepCData = false;
+			}
+		}
 
-                    if (vResult.hasOwnProperty(sProp)) {
-                        if (vResult[sProp].constructor !== Array) {
-                            vResult[sProp] = [vResult[sProp]];
-                        }
-                        vResult[sProp].push(vContent);
+		function initRequiredPolyfills() {
+			function pad(number) {
+				var r = String(number);
+				if (r.length === 1) {
+					r = '0' + r;
+				}
+				return r;
+			}
+			// Hello IE8-
+			if (typeof String.prototype.trim !== 'function') {
+				String.prototype.trim = function trim() {
+					return this.replace(/^\s+|^\n+|(\s|\n)+$/g, '');
+				};
+			}
+			if (typeof Date.prototype.toISOString !== 'function') {
+				// Implementation from http://stackoverflow.com/questions/2573521/how-do-i-output-an-iso-8601-formatted-string-in-javascript
+				Date.prototype.toISOString = function toISOString() {
+					var MS_IN_S = 1000;
 
-                    } else {
-                        if (options.childrenAsArray) {
-                            vResult[sProp] = [];
-                            vResult[sProp].push(vContent);
-                        } else {
-                            vResult[sProp] = vContent;
-                        }
-                        nLength++;
-                    }
-                }
-            }
-        } else if (!sCollectedTxt) { // no children and no text, return null
-            if (options.childrenAsArray) {
-                vResult[options.textKey] = [];
-                vResult[options.textKey].push(null);
-            } else {
-                vResult[options.textKey] = null;
-            }
-        }
+					return this.getUTCFullYear()
+						+ '-' + pad(this.getUTCMonth() + 1)
+						+ '-' + pad(this.getUTCDate())
+						+ 'T' + pad(this.getUTCHours())
+						+ ':' + pad(this.getUTCMinutes())
+						+ ':' + pad(this.getUTCSeconds())
+						+ '.' + String((this.getUTCMilliseconds() / MS_IN_S).toFixed(3)).slice(2, 5)
+						+ 'Z';
+				};
+			}
+		}
 
-        if (sCollectedTxt) {
-            if (options.grokText) {
-                var value = this.grokType(sCollectedTxt.replace(trimMatch, ''));
-                if (value !== null && value !== undefined) {
-                    vResult[options.textKey] = value;
-                }
-            } else if (options.normalize) {
-                vResult[options.textKey] = sCollectedTxt.replace(trimMatch, '').replace(/\s+/g, " ");
-            } else {
-                vResult[options.textKey] = sCollectedTxt.replace(trimMatch, '');
-            }
-        }
+		initConfigDefaults();
+		initRequiredPolyfills();
 
-        return vResult;
-    }
+		var DOMNodeTypes = {
+			"ELEMENT_NODE": 1,
+			"TEXT_NODE": 3,
+			"CDATA_SECTION_NODE": 4,
+			"COMMENT_NODE": 8,
+			"DOCUMENT_NODE": 9
+		};
 
+		function getDomNodeLocalName(domNode) {
+			var localName = domNode.localName;
+			if (localName == null) {
+				// Yeah, this is IE!!
+				localName = domNode.baseName;
+			}
+			if (localName == null || localName === "") {
+				// ==="" is IE too
+				localName = domNode.nodeName;
+			}
+			return localName;
+		}
 
-    // Convert xmlDocument to a string
-    // Returns null on failure
-    this.xmlToString = function (xmlDoc) {
-        try {
-            var xmlString = xmlDoc.xml ? xmlDoc.xml : (new XMLSerializer()).serializeToString(xmlDoc);
-            return xmlString;
-        } catch (err) {
-            return null;
-        }
-    }
+		function getDomNodeNamespacePrefix(node) {
+			return node.prefix;
+		}
 
-    // Convert a string to XML Node Structure
-    // Returns null on failure
-    this.stringToXML = function (xmlString) {
-        try {
-            var xmlDoc = null;
+		function escapeXmlChars(str) {
+			if (typeof str === "string")
+				return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+			else
+				return str;
+		}
 
-            if (window.DOMParser) {
+		function unescapeXmlChars(str) {
+			return str.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+		}
 
-                var parser = new DOMParser();
-                xmlDoc = parser.parseFromString(xmlString, "text/xml");
+		function ensureProperArrayAccessForm(element, childName, elementPath) {
+			switch (config.arrayAccessForm) {
+				case "property":
+					if (!(element[childName] instanceof Array))
+						element[childName + "_asArray"] = [element[childName]];
+					else
+						element[childName + "_asArray"] = element[childName];
+					break;
+			}
 
-                return xmlDoc;
-            } else {
-                xmlDoc = new ActiveXObject("Microsoft.XMLDOM");
-                xmlDoc.async = false;
-                xmlDoc.loadXML(xmlString);
+			if (!(element[childName] instanceof Array) && config.arrayAccessFormPaths.length > 0) {
+				var match = false;
 
-                return xmlDoc;
-            }
-        } catch (e) {
-            return null;
-        }
-    }
+				for (var i = 0; i < config.arrayAccessFormPaths.length; i++) {
+					var arrayPath = config.arrayAccessFormPaths[i];
+					if (typeof arrayPath === "string") {
+						if (arrayPath === elementPath) {
+							match = true;
+							break;
+						}
+					} else if (arrayPath instanceof RegExp) {
+						if (arrayPath.test(elementPath)) {
+							match = true;
+							break;
+						}
+					} else if (typeof arrayPath === "function") {
+						if (arrayPath(childName, elementPath)) {
+							match = true;
+							break;
+						}
+					}
+				}
 
-    return this;
-}).call({});
+				if (match)
+					element[childName] = [element[childName]];
+			}
+		}
 
-if (typeof module != "undefined" && module !== null && module.exports) module.exports = xmlToJSON;
-else if (typeof define === "function" && define.amd) define('xmlToJSON',[],function() {return xmlToJSON});
+		function xmlDateTimeToDate(prop) {
+			// Implementation based up on http://stackoverflow.com/questions/8178598/xml-datetime-to-javascript-date-object
+			// Improved to support full spec and optional parts
+			var MINUTES_PER_HOUR = 60;
+
+			var bits = prop.split(/[-T:+Z]/g);
+
+			var d = new Date(bits[0], bits[1] - 1, bits[2]);
+			var secondBits = bits[5].split("\.");
+			d.setHours(bits[3], bits[4], secondBits[0]);
+			if (secondBits.length > 1)
+				d.setMilliseconds(secondBits[1]);
+
+			// Get supplied time zone offset in minutes
+			if (bits[6] && bits[7]) {
+				var offsetMinutes = bits[6] * MINUTES_PER_HOUR + Number(bits[7]);
+				var sign = /\d\d-\d\d:\d\d$/.test(prop) ? '-' : '+';
+
+				// Apply the sign
+				offsetMinutes = 0 + (sign === '-' ? -1 * offsetMinutes : offsetMinutes);
+
+				// Apply offset and local timezone
+				d.setMinutes(d.getMinutes() - offsetMinutes - d.getTimezoneOffset());
+			} else if (prop.indexOf("Z", prop.length - 1) !== -1) {
+				d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()));
+			}
+
+			// d is now a local time equivalent to the supplied time
+			return d;
+		}
+
+		function convertToDateIfRequired(value, childName, fullPath) {
+			if (config.datetimeAccessFormPaths.length > 0) {
+				var pathWithoutTextNode = fullPath.split("\.#")[0];
+
+				for (var i = 0; i < config.datetimeAccessFormPaths.length; i++) {
+					var candidatePath = config.datetimeAccessFormPaths[i];
+					if (typeof candidatePath === "string") {
+						if (candidatePath === pathWithoutTextNode)
+							return xmlDateTimeToDate(value);
+					} else if (candidatePath instanceof RegExp) {
+						if (candidatePath.test(pathWithoutTextNode))
+							return xmlDateTimeToDate(value);
+					} else if (typeof candidatePath === "function") {
+						if (candidatePath(pathWithoutTextNode))
+							return xmlDateTimeToDate(value);
+					}
+				}
+			}
+
+			return value;
+		}
+
+		function deserializeRootElementChildren(rootElement) {
+			var result = {};
+			var children = rootElement.childNodes;
+
+			// Alternative for firstElementChild which is not supported in some environments
+			for (var i = 0; i < children.length; i++) {
+				var child = children.item(i);
+				if (child.nodeType === DOMNodeTypes.ELEMENT_NODE) {
+					var childName = getDomNodeLocalName(child);
+
+					if (config.ignoreRoot)
+						result = deserializeDomChildren(child, childName);
+					else
+						result[childName] = deserializeDomChildren(child, childName);
+				}
+			}
+
+			return result;
+		}
+
+		function deserializeElementChildren(element, elementPath) {
+			var result = {};
+			result.__cnt = 0;
+
+			var nodeChildren = element.childNodes;
+
+			// Child nodes.
+			for (var iChild = 0; iChild < nodeChildren.length; iChild++) {
+				var child = nodeChildren.item(iChild);
+				var childName = getDomNodeLocalName(child);
+
+				if (child.nodeType === DOMNodeTypes.COMMENT_NODE)
+					continue;
+
+				result.__cnt++;
+
+				// We deliberately do not accept everything falsey here because
+				// elements that resolve to empty string should still be preserved.
+				if (result[childName] == null) {
+					result[childName] = deserializeDomChildren(child, elementPath + "." + childName);
+					ensureProperArrayAccessForm(result, childName, elementPath + "." + childName);
+				} else {
+					if (!(result[childName] instanceof Array)) {
+						result[childName] = [result[childName]];
+						ensureProperArrayAccessForm(result, childName, elementPath + "." + childName);
+					}
+
+					result[childName][result[childName].length] = deserializeDomChildren(child, elementPath + "." + childName);
+				}
+			}
+
+			// Attributes
+			for (var iAttribute = 0; iAttribute < element.attributes.length; iAttribute++) {
+				var attribute = element.attributes.item(iAttribute);
+				result.__cnt++;
+
+				var adjustedValue = attribute.value;
+				for (var iConverter = 0; iConverter < config.attributeConverters.length; iConverter++) {
+					var converter = config.attributeConverters[iConverter];
+					if (converter.test.call(null, attribute.name, attribute.value))
+						adjustedValue = converter.convert.call(null, attribute.name, attribute.value);
+				}
+
+				result[config.attributePrefix + attribute.name] = adjustedValue;
+			}
+
+			// Node namespace prefix
+			var namespacePrefix = getDomNodeNamespacePrefix(element);
+			if (namespacePrefix) {
+				result.__cnt++;
+				result.__prefix = namespacePrefix;
+			}
+
+			if (result["#text"]) {
+				result.__text = result["#text"];
+
+				if (result.__text instanceof Array) {
+					result.__text = result.__text.join("\n");
+				}
+
+				if (config.escapeMode)
+					result.__text = unescapeXmlChars(result.__text);
+
+				if (config.stripWhitespaces)
+					result.__text = result.__text.trim();
+
+				delete result["#text"];
+
+				if (config.arrayAccessForm === "property")
+					delete result["#text_asArray"];
+
+				result.__text = convertToDateIfRequired(result.__text, "#text", elementPath + ".#text");
+			}
+
+			if (result.hasOwnProperty('#cdata-section')) {
+				result.__cdata = result["#cdata-section"];
+				delete result["#cdata-section"];
+
+				if (config.arrayAccessForm === "property")
+					delete result["#cdata-section_asArray"];
+			}
+
+			if (result.__cnt === 1 && result.__text) {
+				result = result.__text;
+			} else if (result.__cnt === 0 && config.emptyNodeForm === "text") {
+				result = '';
+			} else if (result.__cnt > 1 && result.__text !== undefined && config.skipEmptyTextNodesForObj) {
+				if (config.stripWhitespaces && result.__text === "" || result.__text.trim() === "") {
+					delete result.__text;
+				}
+			}
+			delete result.__cnt;
+			
+			if (!config.keepCData && (!result.hasOwnProperty('__text') && result.hasOwnProperty('__cdata'))) {
+				return (result.__cdata ? result.__cdata : '');
+			}
+
+			if (config.enableToStringFunc && (result.__text || result.__cdata)) {
+				result.toString = function toString() {
+					return (this.__text ? this.__text : '') + (this.__cdata ? this.__cdata : '');
+				};
+			}
+
+			return result;
+		}
+
+		function deserializeDomChildren(node, parentPath) {
+			if (node.nodeType === DOMNodeTypes.DOCUMENT_NODE) {
+				return deserializeRootElementChildren(node);
+			} else if (node.nodeType === DOMNodeTypes.ELEMENT_NODE) {
+				return deserializeElementChildren(node, parentPath);
+			} else if (node.nodeType === DOMNodeTypes.TEXT_NODE || node.nodeType === DOMNodeTypes.CDATA_SECTION_NODE) {
+				return node.nodeValue;
+			} else {
+				return null;
+			}
+		}
+
+		function serializeStartTag(jsObject, elementName, attributeNames, selfClosing) {
+			var resultStr = "<" + ((jsObject && jsObject.__prefix) ? (jsObject.__prefix + ":") : "") + elementName;
+
+			if (attributeNames) {
+				for (var i = 0; i < attributeNames.length; i++) {
+					var attributeName = attributeNames[i];
+					var attributeValue = jsObject[attributeName];
+
+					if (config.escapeMode)
+						attributeValue = escapeXmlChars(attributeValue);
+
+					resultStr += " " + attributeName.substr(config.attributePrefix.length) + "=";
+
+					if (config.useDoubleQuotes)
+						resultStr += '"' + attributeValue + '"';
+					else
+						resultStr += "'" + attributeValue + "'";
+				}
+			}
+
+			if (!selfClosing)
+				resultStr += ">";
+			else
+				resultStr += " />";
+
+			return resultStr;
+		}
+
+		function serializeEndTag(jsObject, elementName) {
+			return "</" + ((jsObject && jsObject.__prefix) ? (jsObject.__prefix + ":") : "") + elementName + ">";
+		}
+
+		function endsWith(str, suffix) {
+			return str.indexOf(suffix, str.length - suffix.length) !== -1;
+		}
+
+		function isSpecialProperty(jsonObj, propertyName) {
+			if ((config.arrayAccessForm === "property" && endsWith(propertyName.toString(), ("_asArray")))
+				|| propertyName.toString().indexOf(config.attributePrefix) === 0
+				|| propertyName.toString().indexOf("__") === 0
+				|| (jsonObj[propertyName] instanceof Function))
+				return true;
+			else
+				return false;
+		}
+
+		function getDataElementCount(jsObject) {
+			var count = 0;
+
+			if (jsObject instanceof Object) {
+				for (var propertyName in jsObject) {
+					if (isSpecialProperty(jsObject, propertyName))
+						continue;
+
+					count++;
+				}
+			}
+
+			return count;
+		}
+
+		function getDataAttributeNames(jsObject) {
+			var names = [];
+
+			if (jsObject instanceof Object) {
+				for (var attributeName in jsObject) {
+					if (attributeName.toString().indexOf("__") === -1
+						&& attributeName.toString().indexOf(config.attributePrefix) === 0) {
+						names.push(attributeName);
+					}
+				}
+			}
+
+			return names;
+		}
+
+		function serializeComplexTextNodeContents(textNode) {
+			var result = "";
+
+			if (textNode.__cdata) {
+				result += "<![CDATA[" + textNode.__cdata + "]]>";
+			}
+
+			if (textNode.__text) {
+				if (config.escapeMode)
+					result += escapeXmlChars(textNode.__text);
+				else
+					result += textNode.__text;
+			}
+
+			return result;
+		}
+
+		function serializeTextNodeContents(textNode) {
+			var result = "";
+
+			if (textNode instanceof Object) {
+				result += serializeComplexTextNodeContents(textNode);
+			} else if (textNode !== null) {
+				if (config.escapeMode)
+					result += escapeXmlChars(textNode);
+				else
+					result += textNode;
+			}
+
+			return result;
+		}
+
+		function serializeArray(elementArray, elementName, attributes) {
+			var result = "";
+
+			if (elementArray.length === 0) {
+				result += serializeStartTag(elementArray, elementName, attributes, true);
+			} else {
+				for (var i = 0; i < elementArray.length; i++) {
+					result += serializeJavaScriptObject(elementArray[i], elementName, getDataAttributeNames(elementArray[i]));
+				}
+			}
+
+			return result;
+		}
+
+		function serializeJavaScriptObject(element, elementName, attributes) {
+			var result = "";
+
+			if ((element === undefined || element === null || element === '') && config.selfClosingElements) {
+				result += serializeStartTag(element, elementName, attributes, true);
+			} else if (typeof element === 'object') {
+				if (Object.prototype.toString.call(element) === '[object Array]') {
+					result += serializeArray(element, elementName, attributes);
+				} else if (element instanceof Date) {
+					result += serializeStartTag(element, elementName, attributes, false);
+					result += element.toISOString();
+					result += serializeEndTag(element, elementName);
+				} else {
+					var childElementCount = getDataElementCount(element);
+					if (childElementCount > 0 || element.__text || element.__cdata) {
+						result += serializeStartTag(element, elementName, attributes, false);
+						result += serializeJavaScriptObjectChildren(element);
+						result += serializeEndTag(element, elementName);
+					} else if (config.selfClosingElements) {
+						result += serializeStartTag(element, elementName, attributes, true);
+					} else {
+						result += serializeStartTag(element, elementName, attributes, false);
+						result += serializeEndTag(element, elementName);
+					}
+				}
+			} else {
+				result += serializeStartTag(element, elementName, attributes, false);
+				result += serializeTextNodeContents(element);
+				result += serializeEndTag(element, elementName);
+			}
+
+			return result;
+		}
+
+		function serializeJavaScriptObjectChildren(jsObject) {
+			var result = "";
+
+			var elementCount = getDataElementCount(jsObject);
+
+			if (elementCount > 0) {
+				for (var elementName in jsObject) {
+					if (isSpecialProperty(jsObject, elementName))
+						continue;
+
+					var element = jsObject[elementName];
+					var attributes = getDataAttributeNames(element);
+
+					result += serializeJavaScriptObject(element, elementName, attributes);
+				}
+			}
+
+			result += serializeTextNodeContents(jsObject);
+
+			return result;
+		}
+
+		function parseXml(xml) {
+			if (xml === undefined) {
+				return null;
+			}
+
+			if (typeof xml !== "string") {
+				return null;
+			}
+
+			var parser = null;
+			var domNode = null;
+
+			if (CustomDOMParser) {
+				// This branch is used for node.js, with the xmldom parser.
+				parser = new CustomDOMParser();
+
+				domNode = parser.parseFromString(xml, "text/xml");
+			} else if (window && window.DOMParser) {
+				parser = new window.DOMParser();
+				var parsererrorNS = null;
+
+				var isIEParser = window.ActiveXObject || "ActiveXObject" in window;
+
+				// IE9+ now is here
+				if (!isIEParser) {
+					try {
+						parsererrorNS = parser.parseFromString("INVALID", "text/xml").childNodes[0].namespaceURI;
+					} catch (err) {
+						parsererrorNS = null;
+					}
+				}
+
+				try {
+					domNode = parser.parseFromString(xml, "text/xml");
+					if (parsererrorNS !== null && domNode.getElementsByTagNameNS(parsererrorNS, "parsererror").length > 0) {
+						domNode = null;
+					}
+				} catch (err) {
+					domNode = null;
+				}
+			} else {
+				// IE :(
+				if (xml.indexOf("<?") === 0) {
+					xml = xml.substr(xml.indexOf("?>") + 2);
+				}
+
+				/* global ActiveXObject */
+				domNode = new ActiveXObject("Microsoft.XMLDOM");
+				domNode.async = "false";
+				domNode.loadXML(xml);
+			}
+
+			return domNode;
+		}
+
+		this.asArray = function asArray(prop) {
+			if (prop === undefined || prop === null) {
+				return [];
+			} else if (prop instanceof Array) {
+				return prop;
+			} else {
+				return [prop];
+			}
+		};
+
+		this.toXmlDateTime = function toXmlDateTime(dt) {
+			if (dt instanceof Date) {
+				return dt.toISOString();
+			} else if (typeof (dt) === 'number') {
+				return new Date(dt).toISOString();
+			} else {
+				return null;
+			}
+		};
+
+		this.asDateTime = function asDateTime(prop) {
+			if (typeof (prop) === "string") {
+				return xmlDateTimeToDate(prop);
+			} else {
+				return prop;
+			}
+		};
+
+		/*
+			Internally the logic works in a cycle:
+			DOM->JS - implemented by custom logic (deserialization).
+			JS->XML - implemented by custom logic (serialization).
+			XML->DOM - implemented by browser.
+		*/
+
+		// Transformns an XML string into DOM-tree
+		this.xml2dom = function xml2dom(xml) {
+			return parseXml(xml);
+		};
+
+		// Transforms a DOM tree to JavaScript objects.
+		this.dom2js = function dom2js(domNode) {
+			return deserializeDomChildren(domNode, null);
+		};
+
+		// Transforms JavaScript objects to a DOM tree.
+		this.js2dom = function js2dom(jsObject) {
+			var xml = this.js2xml(jsObject);
+			return parseXml(xml);
+		};
+
+		// Transformns an XML string into JavaScript objects.
+		this.xml2js = function xml2js(xml) {
+			var domNode = parseXml(xml);
+			if (domNode != null)
+				return this.dom2js(domNode);
+			else
+				return null;
+		};
+
+		// Transforms JavaScript objects into an XML string.
+		this.js2xml = function js2xml(jsObject) {
+			return serializeJavaScriptObjectChildren(jsObject);
+		};
+
+		this.getVersion = function getVersion() {
+			return VERSION;
+		};
+	};
+});
 
 
         define('aurelia-manifest',[
@@ -23501,5 +23991,5 @@ else if (typeof define === "function" && define.amd) define('xmlToJSON',[],funct
           // "aurelia-i18n",
           "aurelia-validation",
           // "aurelia-ui-virtualization"
-          "xmlToJSON"
+          "x2js"
         ], function() {});
