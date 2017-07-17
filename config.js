@@ -43,11 +43,6 @@ require.config({
       location: 'node_modules/aurelia-templating-resources/dist/amd',
       main : 'aurelia-templating-resources'
     },
-    {
-      name: 'aurelia-fetch-client',
-      location: 'node_modules/aurelia-fetch-client/dist/amd',
-      main : 'aurelia-fetch-client'
-    },
     // {
     //   name: 'aurelia-i18n',
     //   location: 'node_modules/aurelia-i18n/dist/amd',
