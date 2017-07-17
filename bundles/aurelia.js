@@ -6295,7 +6295,7 @@ define('aurelia-polyfills',['aurelia-pal'], function (_aureliaPal) {
       },
           propertyIsEnumerable = function propertyIsEnumerable(key) {
         var uid = '' + key;
-        return onlySymbols(uid) ? hOP.call(this, uid) && this[internalSymbol]['@@' + uid] : pIE.call(this, key);
+        return onlySymbols(uid) ? hOP.call(this, uid) && this[internalSymbol] && this[internalSymbol]['@@' + uid] : pIE.call(this, key);
       },
           setAndGetSymbol = function setAndGetSymbol(uid) {
         var descriptor = {
@@ -6348,7 +6348,16 @@ define('aurelia-polyfills',['aurelia-pal'], function (_aureliaPal) {
       descriptor.value = $getOwnPropertySymbols;
       defineProperty(Object, GOPS, descriptor);
 
+      var cachedWindowNames = (typeof window === 'undefined' ? 'undefined' : _typeof(window)) === 'object' ? Object.getOwnPropertyNames(window) : [];
+      var originalObjectGetOwnPropertyNames = Object.getOwnPropertyNames;
       descriptor.value = function getOwnPropertyNames(o) {
+        if (toString.call(o) === '[object Window]') {
+          try {
+            return originalObjectGetOwnPropertyNames(o);
+          } catch (e) {
+            return [].concat([], cachedWindowNames);
+          }
+        }
         return gOPN(o).filter(onlyNonSymbols);
       };
       defineProperty(Object, GOPN, descriptor);
@@ -21131,7 +21140,7 @@ define('aurelia-validation/property-info',["require", "exports", "aurelia-bindin
         var object;
         var propertyName;
         if (expression instanceof aurelia_binding_1.AccessScope) {
-            object = source.bindingContext;
+            object = aurelia_binding_1.getContextFor(expression.name, source, expression.ancestor);
             propertyName = expression.name;
         }
         else if (expression instanceof aurelia_binding_1.AccessMember) {
@@ -21151,6 +21160,52 @@ define('aurelia-validation/property-info',["require", "exports", "aurelia-bindin
         return { object: object, propertyName: propertyName };
     }
     exports.getPropertyInfo = getPropertyInfo;
+});
+
+define('aurelia-validation/util',["require", "exports"], function (require, exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    function isString(value) {
+        return Object.prototype.toString.call(value) === '[object String]';
+    }
+    exports.isString = isString;
+});
+
+define('aurelia-validation/property-accessor-parser',["require", "exports", "aurelia-binding", "./util"], function (require, exports, aurelia_binding_1, util_1) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var PropertyAccessorParser = (function () {
+        function PropertyAccessorParser(parser) {
+            this.parser = parser;
+        }
+        PropertyAccessorParser.prototype.parse = function (property) {
+            if (util_1.isString(property)) {
+                return property;
+            }
+            var accessorText = getAccessorExpression(property.toString());
+            var accessor = this.parser.parse(accessorText);
+            if (accessor instanceof aurelia_binding_1.AccessScope
+                || accessor instanceof aurelia_binding_1.AccessMember && accessor.object instanceof aurelia_binding_1.AccessScope) {
+                return accessor.name;
+            }
+            throw new Error("Invalid property expression: \"" + accessor + "\"");
+        };
+        PropertyAccessorParser.inject = [aurelia_binding_1.Parser];
+        return PropertyAccessorParser;
+    }());
+    exports.PropertyAccessorParser = PropertyAccessorParser;
+    function getAccessorExpression(fn) {
+        /* tslint:disable:max-line-length */
+        var classic = /^function\s*\([$_\w\d]+\)\s*\{(?:\s*"use strict";)?\s*(?:[$_\w\d.['"\]+;]+)?\s*return\s+[$_\w\d]+\.([$_\w\d]+)\s*;?\s*\}$/;
+        /* tslint:enable:max-line-length */
+        var arrow = /^\(?[$_\w\d]+\)?\s*=>\s*[$_\w\d]+\.([$_\w\d]+)$/;
+        var match = classic.exec(fn) || arrow.exec(fn);
+        if (match === null) {
+            throw new Error("Unable to parse accessor function:\n" + fn);
+        }
+        return match[1];
+    }
+    exports.getAccessorExpression = getAccessorExpression;
 });
 
 define('aurelia-validation/validate-trigger',["require", "exports"], function (require, exports) {
@@ -21180,7 +21235,6 @@ define('aurelia-validation/validate-trigger',["require", "exports"], function (r
          */
         validateTrigger[validateTrigger["changeOrBlur"] = 3] = "changeOrBlur";
     })(validateTrigger = exports.validateTrigger || (exports.validateTrigger = {}));
-    ;
 });
 
 define('aurelia-validation/validator',["require", "exports"], function (require, exports) {
@@ -21222,13 +21276,57 @@ define('aurelia-validation/validate-result',["require", "exports"], function (re
         ValidateResult.prototype.toString = function () {
             return this.valid ? 'Valid.' : this.message;
         };
+        ValidateResult.nextId = 0;
         return ValidateResult;
     }());
-    ValidateResult.nextId = 0;
     exports.ValidateResult = ValidateResult;
 });
 
-define('aurelia-validation/validation-controller',["require", "exports", "./validator", "./validate-trigger", "./property-info", "./validate-result"], function (require, exports, validator_1, validate_trigger_1, property_info_1, validate_result_1) {
+define('aurelia-validation/validate-event',["require", "exports"], function (require, exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var ValidateEvent = (function () {
+        function ValidateEvent(
+            /**
+             * The type of validate event. Either "validate" or "reset".
+             */
+            type, 
+            /**
+             * The controller's current array of errors. For an array containing both
+             * failed rules and passed rules, use the "results" property.
+             */
+            errors, 
+            /**
+             * The controller's current array of validate results. This
+             * includes both passed rules and failed rules. For an array of only failed rules,
+             * use the "errors" property.
+             */
+            results, 
+            /**
+             * The instruction passed to the "validate" or "reset" event. Will be null when
+             * the controller's validate/reset method was called with no instruction argument.
+             */
+            instruction, 
+            /**
+             * In events with type === "validate", this property will contain the result
+             * of validating the instruction (see "instruction" property). Use the controllerValidateResult
+             * to access the validate results specific to the call to "validate"
+             * (as opposed to using the "results" and "errors" properties to access the controller's entire
+             * set of results/errors).
+             */
+            controllerValidateResult) {
+            this.type = type;
+            this.errors = errors;
+            this.results = results;
+            this.instruction = instruction;
+            this.controllerValidateResult = controllerValidateResult;
+        }
+        return ValidateEvent;
+    }());
+    exports.ValidateEvent = ValidateEvent;
+});
+
+define('aurelia-validation/validation-controller',["require", "exports", "./validator", "./validate-trigger", "./property-info", "./validate-result", "./property-accessor-parser", "./validate-event"], function (require, exports, validator_1, validate_trigger_1, property_info_1, validate_result_1, property_accessor_parser_1, validate_event_1) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     /**
@@ -21237,8 +21335,9 @@ define('aurelia-validation/validation-controller',["require", "exports", "./vali
      * Exposes the current list of validation results for binding purposes.
      */
     var ValidationController = (function () {
-        function ValidationController(validator) {
+        function ValidationController(validator, propertyParser) {
             this.validator = validator;
+            this.propertyParser = propertyParser;
             // Registered bindings (via the validate binding behavior)
             this.bindings = new Map();
             // Renderers that have been added to the controller instance.
@@ -21265,7 +21364,26 @@ define('aurelia-validation/validation-controller',["require", "exports", "./vali
             this.validateTrigger = validate_trigger_1.validateTrigger.blur;
             // Promise that resolves when validation has completed.
             this.finishValidating = Promise.resolve();
+            this.eventCallbacks = [];
         }
+        /**
+         * Subscribe to controller validate and reset events. These events occur when the
+         * controller's "validate"" and "reset" methods are called.
+         * @param callback The callback to be invoked when the controller validates or resets.
+         */
+        ValidationController.prototype.subscribe = function (callback) {
+            var _this = this;
+            this.eventCallbacks.push(callback);
+            return {
+                dispose: function () {
+                    var index = _this.eventCallbacks.indexOf(callback);
+                    if (index === -1) {
+                        return;
+                    }
+                    _this.eventCallbacks.splice(index, 1);
+                }
+            };
+        };
         /**
          * Adds an object to the set of objects that should be validated when validate is called.
          * @param object The object.
@@ -21287,7 +21405,14 @@ define('aurelia-validation/validation-controller',["require", "exports", "./vali
          */
         ValidationController.prototype.addError = function (message, object, propertyName) {
             if (propertyName === void 0) { propertyName = null; }
-            var result = new validate_result_1.ValidateResult({}, object, propertyName, false, message);
+            var resolvedPropertyName;
+            if (propertyName === null) {
+                resolvedPropertyName = propertyName;
+            }
+            else {
+                resolvedPropertyName = this.propertyParser.parse(propertyName);
+            }
+            var result = new validate_result_1.ValidateResult({ __manuallyAdded__: true }, object, resolvedPropertyName, false, message);
             this.processResultDelta('validate', [], [result]);
             return result;
         };
@@ -21425,6 +21550,7 @@ define('aurelia-validation/validation-controller',["require", "exports", "./vali
                     valid: newResults.find(function (x) { return !x.valid; }) === undefined,
                     results: newResults
                 };
+                _this.invokeCallbacks(instruction, result);
                 return result;
             })
                 .catch(function (exception) {
@@ -21445,6 +21571,7 @@ define('aurelia-validation/validation-controller',["require", "exports", "./vali
             var predicate = this.getInstructionPredicate(instruction);
             var oldResults = this.results.filter(predicate);
             this.processResultDelta('reset', oldResults, []);
+            this.invokeCallbacks(instruction, null);
         };
         /**
          * Gets the elements associated with an object and propertyName (if any).
@@ -21569,9 +21696,45 @@ define('aurelia-validation/validation-controller',["require", "exports", "./vali
             var object = propertyInfo.object, propertyName = propertyInfo.propertyName;
             this.reset({ object: object, propertyName: propertyName });
         };
+        /**
+         * Changes the controller's validateTrigger.
+         * @param newTrigger The new validateTrigger
+         */
+        ValidationController.prototype.changeTrigger = function (newTrigger) {
+            this.validateTrigger = newTrigger;
+            var bindings = Array.from(this.bindings.keys());
+            for (var _i = 0, bindings_1 = bindings; _i < bindings_1.length; _i++) {
+                var binding = bindings_1[_i];
+                var source = binding.source;
+                binding.unbind();
+                binding.bind(source);
+            }
+        };
+        /**
+         * Revalidates the controller's current set of errors.
+         */
+        ValidationController.prototype.revalidateErrors = function () {
+            for (var _i = 0, _a = this.errors; _i < _a.length; _i++) {
+                var _b = _a[_i], object = _b.object, propertyName = _b.propertyName, rule = _b.rule;
+                if (rule.__manuallyAdded__) {
+                    continue;
+                }
+                var rules = [rule];
+                this.validate({ object: object, propertyName: propertyName, rules: rules });
+            }
+        };
+        ValidationController.prototype.invokeCallbacks = function (instruction, result) {
+            if (this.eventCallbacks.length === 0) {
+                return;
+            }
+            var event = new validate_event_1.ValidateEvent(result ? 'validate' : 'reset', this.errors, this.results, instruction || null, result);
+            for (var i = 0; i < this.eventCallbacks.length; i++) {
+                this.eventCallbacks[i](event);
+            }
+        };
+        ValidationController.inject = [validator_1.Validator, property_accessor_parser_1.PropertyAccessorParser];
         return ValidationController;
     }());
-    ValidationController.inject = [validator_1.Validator];
     exports.ValidationController = ValidationController;
 });
 
@@ -21608,6 +21771,7 @@ define('aurelia-validation/validate-binding-behavior-base',["require", "exports"
             if (trigger & validate_trigger_1.validateTrigger.change) {
                 binding.standardUpdateSource = binding.updateSource;
                 // tslint:disable-next-line:only-arrow-functions
+                // tslint:disable-next-line:space-before-function-paren
                 binding.updateSource = function (value) {
                     this.standardUpdateSource(value);
                     this.validationController.validateBinding(this);
@@ -21624,6 +21788,7 @@ define('aurelia-validation/validate-binding-behavior-base',["require", "exports"
             if (trigger !== validate_trigger_1.validateTrigger.manual) {
                 binding.standardUpdateTarget = binding.updateTarget;
                 // tslint:disable-next-line:only-arrow-functions
+                // tslint:disable-next-line:space-before-function-paren
                 binding.updateTarget = function (value) {
                     this.standardUpdateTarget(value);
                     this.validationController.resetBinding(this);
@@ -21679,9 +21844,9 @@ define('aurelia-validation/validate-binding-behavior',["require", "exports", "au
         ValidateBindingBehavior.prototype.getValidateTrigger = function (controller) {
             return controller.validateTrigger;
         };
+        ValidateBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
         return ValidateBindingBehavior;
     }(validate_binding_behavior_base_1.ValidateBindingBehaviorBase));
-    ValidateBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
     exports.ValidateBindingBehavior = ValidateBindingBehavior;
     /**
      * Binding behavior. Indicates the bound property will be validated
@@ -21696,9 +21861,9 @@ define('aurelia-validation/validate-binding-behavior',["require", "exports", "au
         ValidateManuallyBindingBehavior.prototype.getValidateTrigger = function () {
             return validate_trigger_1.validateTrigger.manual;
         };
+        ValidateManuallyBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
         return ValidateManuallyBindingBehavior;
     }(validate_binding_behavior_base_1.ValidateBindingBehaviorBase));
-    ValidateManuallyBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
     exports.ValidateManuallyBindingBehavior = ValidateManuallyBindingBehavior;
     /**
      * Binding behavior. Indicates the bound property should be validated
@@ -21712,9 +21877,9 @@ define('aurelia-validation/validate-binding-behavior',["require", "exports", "au
         ValidateOnBlurBindingBehavior.prototype.getValidateTrigger = function () {
             return validate_trigger_1.validateTrigger.blur;
         };
+        ValidateOnBlurBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
         return ValidateOnBlurBindingBehavior;
     }(validate_binding_behavior_base_1.ValidateBindingBehaviorBase));
-    ValidateOnBlurBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
     exports.ValidateOnBlurBindingBehavior = ValidateOnBlurBindingBehavior;
     /**
      * Binding behavior. Indicates the bound property should be validated
@@ -21729,9 +21894,9 @@ define('aurelia-validation/validate-binding-behavior',["require", "exports", "au
         ValidateOnChangeBindingBehavior.prototype.getValidateTrigger = function () {
             return validate_trigger_1.validateTrigger.change;
         };
+        ValidateOnChangeBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
         return ValidateOnChangeBindingBehavior;
     }(validate_binding_behavior_base_1.ValidateBindingBehaviorBase));
-    ValidateOnChangeBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
     exports.ValidateOnChangeBindingBehavior = ValidateOnChangeBindingBehavior;
     /**
      * Binding behavior. Indicates the bound property should be validated
@@ -21746,13 +21911,13 @@ define('aurelia-validation/validate-binding-behavior',["require", "exports", "au
         ValidateOnChangeOrBlurBindingBehavior.prototype.getValidateTrigger = function () {
             return validate_trigger_1.validateTrigger.changeOrBlur;
         };
+        ValidateOnChangeOrBlurBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
         return ValidateOnChangeOrBlurBindingBehavior;
     }(validate_binding_behavior_base_1.ValidateBindingBehaviorBase));
-    ValidateOnChangeOrBlurBindingBehavior.inject = [aurelia_task_queue_1.TaskQueue];
     exports.ValidateOnChangeOrBlurBindingBehavior = ValidateOnChangeOrBlurBindingBehavior;
 });
 
-define('aurelia-validation/validation-controller-factory',["require", "exports", "./validation-controller", "./validator"], function (require, exports, validation_controller_1, validator_1) {
+define('aurelia-validation/validation-controller-factory',["require", "exports", "./validation-controller", "./validator", "./property-accessor-parser"], function (require, exports, validation_controller_1, validator_1, property_accessor_parser_1) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     /**
@@ -21772,7 +21937,8 @@ define('aurelia-validation/validation-controller-factory',["require", "exports",
             if (!validator) {
                 validator = this.container.get(validator_1.Validator);
             }
-            return new validation_controller_1.ValidationController(validator);
+            var propertyParser = this.container.get(property_accessor_parser_1.PropertyAccessorParser);
+            return new validation_controller_1.ValidationController(validator, propertyParser);
         };
         /**
          * Creates a new controller and registers it in the current element's container so that it's
@@ -21856,18 +22022,18 @@ define('aurelia-validation/validation-errors-custom-attribute',["require", "expo
                 this.controller.removeRenderer(this);
             }
         };
+        ValidationErrorsCustomAttribute.inject = [aurelia_pal_1.DOM.Element, aurelia_dependency_injection_1.Lazy.of(validation_controller_1.ValidationController)];
+        __decorate([
+            aurelia_templating_1.bindable({ defaultBindingMode: aurelia_binding_1.bindingMode.oneWay })
+        ], ValidationErrorsCustomAttribute.prototype, "controller", void 0);
+        __decorate([
+            aurelia_templating_1.bindable({ primaryProperty: true, defaultBindingMode: aurelia_binding_1.bindingMode.twoWay })
+        ], ValidationErrorsCustomAttribute.prototype, "errors", void 0);
+        ValidationErrorsCustomAttribute = __decorate([
+            aurelia_templating_1.customAttribute('validation-errors')
+        ], ValidationErrorsCustomAttribute);
         return ValidationErrorsCustomAttribute;
     }());
-    ValidationErrorsCustomAttribute.inject = [aurelia_pal_1.DOM.Element, aurelia_dependency_injection_1.Lazy.of(validation_controller_1.ValidationController)];
-    __decorate([
-        aurelia_templating_1.bindable({ defaultBindingMode: aurelia_binding_1.bindingMode.oneWay })
-    ], ValidationErrorsCustomAttribute.prototype, "controller", void 0);
-    __decorate([
-        aurelia_templating_1.bindable({ primaryProperty: true, defaultBindingMode: aurelia_binding_1.bindingMode.twoWay })
-    ], ValidationErrorsCustomAttribute.prototype, "errors", void 0);
-    ValidationErrorsCustomAttribute = __decorate([
-        aurelia_templating_1.customAttribute('validation-errors')
-    ], ValidationErrorsCustomAttribute);
     exports.ValidationErrorsCustomAttribute = ValidationErrorsCustomAttribute;
 });
 
@@ -21928,22 +22094,93 @@ define('aurelia-validation/implementation/rules',["require", "exports"], functio
         Rules.get = function (target) {
             return target[Rules.key] || null;
         };
+        /**
+         * The name of the property that stores the rules.
+         */
+        Rules.key = '__rules__';
         return Rules;
     }());
-    /**
-     * The name of the property that stores the rules.
-     */
-    Rules.key = '__rules__';
     exports.Rules = Rules;
 });
 
-define('aurelia-validation/implementation/util',["require", "exports"], function (require, exports) {
+define('aurelia-validation/implementation/expression-visitor',["require", "exports"], function (require, exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    function isString(value) {
-        return Object.prototype.toString.call(value) === '[object String]';
-    }
-    exports.isString = isString;
+    // tslint:disable:no-empty
+    var ExpressionVisitor = (function () {
+        function ExpressionVisitor() {
+        }
+        ExpressionVisitor.prototype.visitChain = function (chain) {
+            this.visitArgs(chain.expressions);
+        };
+        ExpressionVisitor.prototype.visitBindingBehavior = function (behavior) {
+            behavior.expression.accept(this);
+            this.visitArgs(behavior.args);
+        };
+        ExpressionVisitor.prototype.visitValueConverter = function (converter) {
+            converter.expression.accept(this);
+            this.visitArgs(converter.args);
+        };
+        ExpressionVisitor.prototype.visitAssign = function (assign) {
+            assign.target.accept(this);
+            assign.value.accept(this);
+        };
+        ExpressionVisitor.prototype.visitConditional = function (conditional) {
+            conditional.condition.accept(this);
+            conditional.yes.accept(this);
+            conditional.no.accept(this);
+        };
+        ExpressionVisitor.prototype.visitAccessThis = function (access) {
+            access.ancestor = access.ancestor;
+        };
+        ExpressionVisitor.prototype.visitAccessScope = function (access) {
+            access.name = access.name;
+        };
+        ExpressionVisitor.prototype.visitAccessMember = function (access) {
+            access.object.accept(this);
+        };
+        ExpressionVisitor.prototype.visitAccessKeyed = function (access) {
+            access.object.accept(this);
+            access.key.accept(this);
+        };
+        ExpressionVisitor.prototype.visitCallScope = function (call) {
+            this.visitArgs(call.args);
+        };
+        ExpressionVisitor.prototype.visitCallFunction = function (call) {
+            call.func.accept(this);
+            this.visitArgs(call.args);
+        };
+        ExpressionVisitor.prototype.visitCallMember = function (call) {
+            call.object.accept(this);
+            this.visitArgs(call.args);
+        };
+        ExpressionVisitor.prototype.visitPrefix = function (prefix) {
+            prefix.expression.accept(this);
+        };
+        ExpressionVisitor.prototype.visitBinary = function (binary) {
+            binary.left.accept(this);
+            binary.right.accept(this);
+        };
+        ExpressionVisitor.prototype.visitLiteralPrimitive = function (literal) {
+            literal.value = literal.value;
+        };
+        ExpressionVisitor.prototype.visitLiteralArray = function (literal) {
+            this.visitArgs(literal.elements);
+        };
+        ExpressionVisitor.prototype.visitLiteralObject = function (literal) {
+            this.visitArgs(literal.values);
+        };
+        ExpressionVisitor.prototype.visitLiteralString = function (literal) {
+            literal.value = literal.value;
+        };
+        ExpressionVisitor.prototype.visitArgs = function (args) {
+            for (var i = 0; i < args.length; i++) {
+                args[i].accept(this);
+            }
+        };
+        return ExpressionVisitor;
+    }());
+    exports.ExpressionVisitor = ExpressionVisitor;
 });
 
 var __extends = (this && this.__extends) || (function () {
@@ -21956,19 +22193,18 @@ var __extends = (this && this.__extends) || (function () {
         d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
     };
 })();
-define('aurelia-validation/implementation/validation-parser',["require", "exports", "aurelia-binding", "aurelia-templating", "./util", "aurelia-logging"], function (require, exports, aurelia_binding_1, aurelia_templating_1, util_1, LogManager) {
+define('aurelia-validation/implementation/validation-message-parser',["require", "exports", "aurelia-binding", "aurelia-templating", "aurelia-logging", "./expression-visitor"], function (require, exports, aurelia_binding_1, aurelia_templating_1, LogManager, expression_visitor_1) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    var ValidationParser = (function () {
-        function ValidationParser(parser, bindinqLanguage) {
-            this.parser = parser;
+    var ValidationMessageParser = (function () {
+        function ValidationMessageParser(bindinqLanguage) {
             this.bindinqLanguage = bindinqLanguage;
             this.emptyStringExpression = new aurelia_binding_1.LiteralString('');
             this.nullExpression = new aurelia_binding_1.LiteralPrimitive(null);
             this.undefinedExpression = new aurelia_binding_1.LiteralPrimitive(undefined);
             this.cache = {};
         }
-        ValidationParser.prototype.parseMessage = function (message) {
+        ValidationMessageParser.prototype.parse = function (message) {
             if (this.cache[message] !== undefined) {
                 return this.cache[message];
             }
@@ -21984,43 +22220,18 @@ define('aurelia-validation/implementation/validation-parser',["require", "export
             this.cache[message] = expression;
             return expression;
         };
-        ValidationParser.prototype.parseProperty = function (property) {
-            if (util_1.isString(property)) {
-                return { name: property, displayName: null };
-            }
-            var accessor = this.getAccessorExpression(property.toString());
-            if (accessor instanceof aurelia_binding_1.AccessScope
-                || accessor instanceof aurelia_binding_1.AccessMember && accessor.object instanceof aurelia_binding_1.AccessScope) {
-                return {
-                    name: accessor.name,
-                    displayName: null
-                };
-            }
-            throw new Error("Invalid subject: \"" + accessor + "\"");
-        };
-        ValidationParser.prototype.coalesce = function (part) {
+        ValidationMessageParser.prototype.coalesce = function (part) {
             // part === null || part === undefined ? '' : part
             return new aurelia_binding_1.Conditional(new aurelia_binding_1.Binary('||', new aurelia_binding_1.Binary('===', part, this.nullExpression), new aurelia_binding_1.Binary('===', part, this.undefinedExpression)), this.emptyStringExpression, new aurelia_binding_1.CallMember(part, 'toString', []));
         };
-        ValidationParser.prototype.getAccessorExpression = function (fn) {
-            /* tslint:disable:max-line-length */
-            var classic = /^function\s*\([$_\w\d]+\)\s*\{(?:\s*"use strict";)?\s*(?:[$_\w\d.['"\]+;]+)?\s*return\s+[$_\w\d]+\.([$_\w\d]+)\s*;?\s*\}$/;
-            /* tslint:enable:max-line-length */
-            var arrow = /^\(?[$_\w\d]+\)?\s*=>\s*[$_\w\d]+\.([$_\w\d]+)$/;
-            var match = classic.exec(fn) || arrow.exec(fn);
-            if (match === null) {
-                throw new Error("Unable to parse accessor function:\n" + fn);
-            }
-            return this.parser.parse(match[1]);
-        };
-        return ValidationParser;
+        ValidationMessageParser.inject = [aurelia_templating_1.BindingLanguage];
+        return ValidationMessageParser;
     }());
-    ValidationParser.inject = [aurelia_binding_1.Parser, aurelia_templating_1.BindingLanguage];
-    exports.ValidationParser = ValidationParser;
+    exports.ValidationMessageParser = ValidationMessageParser;
     var MessageExpressionValidator = (function (_super) {
         __extends(MessageExpressionValidator, _super);
         function MessageExpressionValidator(originalMessage) {
-            var _this = _super.call(this, []) || this;
+            var _this = _super.call(this) || this;
             _this.originalMessage = originalMessage;
             return _this;
         }
@@ -22038,11 +22249,11 @@ define('aurelia-validation/implementation/validation-parser',["require", "export
             }
         };
         return MessageExpressionValidator;
-    }(aurelia_binding_1.Unparser));
+    }(expression_visitor_1.ExpressionVisitor));
     exports.MessageExpressionValidator = MessageExpressionValidator;
 });
 
-define('aurelia-validation/implementation/validation-messages',["require", "exports", "./validation-parser"], function (require, exports, validation_parser_1) {
+define('aurelia-validation/implementation/validation-messages',["require", "exports", "./validation-message-parser"], function (require, exports, validation_message_parser_1) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     /**
@@ -22081,7 +22292,7 @@ define('aurelia-validation/implementation/validation-messages',["require", "expo
             else {
                 message = exports.validationMessages['default'];
             }
-            return this.parser.parseMessage(message);
+            return this.parser.parse(message);
         };
         /**
          * Formulates a property display name using the property name and the configured
@@ -22098,9 +22309,9 @@ define('aurelia-validation/implementation/validation-messages',["require", "expo
             // capitalize first letter.
             return words.charAt(0).toUpperCase() + words.slice(1);
         };
+        ValidationMessageProvider.inject = [validation_message_parser_1.ValidationMessageParser];
         return ValidationMessageProvider;
     }());
-    ValidationMessageProvider.inject = [validation_parser_1.ValidationParser];
     exports.ValidationMessageProvider = ValidationMessageProvider;
 });
 
@@ -22237,24 +22448,24 @@ define('aurelia-validation/implementation/standard-validator',["require", "expor
             }
             return this.validateRuleSequence(object, propertyName, rules, 0, []);
         };
+        StandardValidator.inject = [validation_messages_1.ValidationMessageProvider, aurelia_templating_1.ViewResources];
         return StandardValidator;
     }(validator_1.Validator));
-    StandardValidator.inject = [validation_messages_1.ValidationMessageProvider, aurelia_templating_1.ViewResources];
     exports.StandardValidator = StandardValidator;
 });
 
-define('aurelia-validation/implementation/validation-rules',["require", "exports", "./util", "./rules", "./validation-messages"], function (require, exports, util_1, rules_1, validation_messages_1) {
+define('aurelia-validation/implementation/validation-rules',["require", "exports", "./rules", "./validation-messages", "../util"], function (require, exports, rules_1, validation_messages_1, util_1) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     /**
      * Part of the fluent rule API. Enables customizing property rules.
      */
     var FluentRuleCustomizer = (function () {
-        function FluentRuleCustomizer(property, condition, config, fluentEnsure, fluentRules, parser) {
+        function FluentRuleCustomizer(property, condition, config, fluentEnsure, fluentRules, parsers) {
             if (config === void 0) { config = {}; }
             this.fluentEnsure = fluentEnsure;
             this.fluentRules = fluentRules;
-            this.parser = parser;
+            this.parsers = parsers;
             this.rule = {
                 property: property,
                 condition: condition,
@@ -22288,7 +22499,7 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
          */
         FluentRuleCustomizer.prototype.withMessage = function (message) {
             this.rule.messageKey = 'custom';
-            this.rule.message = this.parser.parseMessage(message);
+            this.rule.message = this.parsers.message.parse(message);
             return this;
         };
         /**
@@ -22426,9 +22637,9 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
      * Part of the fluent rule API. Enables applying rules to properties and objects.
      */
     var FluentRules = (function () {
-        function FluentRules(fluentEnsure, parser, property) {
+        function FluentRules(fluentEnsure, parsers, property) {
             this.fluentEnsure = fluentEnsure;
-            this.parser = parser;
+            this.parsers = parsers;
             this.property = property;
             /**
              * Current rule sequence number. Used to postpone evaluation of rules until rules
@@ -22451,7 +22662,7 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
          * Should return a boolean or a Promise that resolves to a boolean.
          */
         FluentRules.prototype.satisfies = function (condition, config) {
-            return new FluentRuleCustomizer(this.property, condition, config, this.fluentEnsure, this, this.parser);
+            return new FluentRuleCustomizer(this.property, condition, config, this.fluentEnsure, this, this.parsers);
         };
         /**
          * Applies a rule by name.
@@ -22550,16 +22761,16 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
             return this.satisfies(function (value) { return value === null || value === undefined || value === '' || value === expectedValue; }, { expectedValue: expectedValue })
                 .withMessageKey('equals');
         };
+        FluentRules.customRules = {};
         return FluentRules;
     }());
-    FluentRules.customRules = {};
     exports.FluentRules = FluentRules;
     /**
      * Part of the fluent rule API. Enables targeting properties and objects with rules.
      */
     var FluentEnsure = (function () {
-        function FluentEnsure(parser) {
-            this.parser = parser;
+        function FluentEnsure(parsers) {
+            this.parsers = parsers;
             /**
              * Rules that have been defined using the fluent API.
              */
@@ -22572,14 +22783,17 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
          */
         FluentEnsure.prototype.ensure = function (property) {
             this.assertInitialized();
-            return new FluentRules(this, this.parser, this.parser.parseProperty(property));
+            var name = this.parsers.property.parse(property);
+            var fluentRules = new FluentRules(this, this.parsers, { name: name, displayName: null });
+            return this.mergeRules(fluentRules, name);
         };
         /**
          * Targets an object with validation rules.
          */
         FluentEnsure.prototype.ensureObject = function () {
             this.assertInitialized();
-            return new FluentRules(this, this.parser, { name: null, displayName: null });
+            var fluentRules = new FluentRules(this, this.parsers, { name: null, displayName: null });
+            return this.mergeRules(fluentRules, null);
         };
         /**
          * Applies the rules to a class or object, making them discoverable by the StandardValidator.
@@ -22600,10 +22814,21 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
             this.rules[rule.sequence].push(rule);
         };
         FluentEnsure.prototype.assertInitialized = function () {
-            if (this.parser) {
+            if (this.parsers) {
                 return;
             }
             throw new Error("Did you forget to add \".plugin('aurelia-validation')\" to your main.js?");
+        };
+        FluentEnsure.prototype.mergeRules = function (fluentRules, propertyName) {
+            var existingRules = this.rules.find(function (r) { return r.length > 0 && r[0].property.name === propertyName; });
+            if (existingRules) {
+                var rule = existingRules[existingRules.length - 1];
+                fluentRules.sequence = rule.sequence;
+                if (rule.property.displayName !== null) {
+                    fluentRules = fluentRules.displayName(rule.property.displayName);
+                }
+            }
+            return fluentRules;
         };
         return FluentEnsure;
     }());
@@ -22614,21 +22839,24 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
     var ValidationRules = (function () {
         function ValidationRules() {
         }
-        ValidationRules.initialize = function (parser) {
-            ValidationRules.parser = parser;
+        ValidationRules.initialize = function (messageParser, propertyParser) {
+            this.parsers = {
+                message: messageParser,
+                property: propertyParser
+            };
         };
         /**
          * Target a property with validation rules.
          * @param property The property to target. Can be the property name or a property accessor function.
          */
         ValidationRules.ensure = function (property) {
-            return new FluentEnsure(ValidationRules.parser).ensure(property);
+            return new FluentEnsure(ValidationRules.parsers).ensure(property);
         };
         /**
          * Targets an object with validation rules.
          */
         ValidationRules.ensureObject = function () {
-            return new FluentEnsure(ValidationRules.parser).ensureObject();
+            return new FluentEnsure(ValidationRules.parsers).ensureObject();
         };
         /**
          * Defines a custom rule.
@@ -22651,6 +22879,13 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
             return rules.map(function (x) { return x.filter(function (r) { return r.tag === tag; }); });
         };
         /**
+         * Returns rules that have no tag.
+         * @param rules The rules to search.
+         */
+        ValidationRules.untaggedRules = function (rules) {
+            return rules.map(function (x) { return x.filter(function (r) { return r.tag === undefined; }); });
+        };
+        /**
          * Removes the rules from a class or object.
          * @param target A class or object.
          */
@@ -22663,7 +22898,7 @@ define('aurelia-validation/implementation/validation-rules',["require", "exports
 });
 
 // Exports
-define('aurelia-validation/aurelia-validation',["require", "exports", "./get-target-dom-element", "./property-info", "./validate-binding-behavior", "./validate-result", "./validate-trigger", "./validation-controller", "./validation-controller-factory", "./validation-errors-custom-attribute", "./validation-renderer-custom-attribute", "./validator", "./implementation/rules", "./implementation/standard-validator", "./implementation/validation-messages", "./implementation/validation-parser", "./implementation/validation-rules", "aurelia-pal", "./validator", "./implementation/standard-validator", "./implementation/validation-parser", "./implementation/validation-rules"], function (require, exports, get_target_dom_element_1, property_info_1, validate_binding_behavior_1, validate_result_1, validate_trigger_1, validation_controller_1, validation_controller_factory_1, validation_errors_custom_attribute_1, validation_renderer_custom_attribute_1, validator_1, rules_1, standard_validator_1, validation_messages_1, validation_parser_1, validation_rules_1, aurelia_pal_1, validator_2, standard_validator_2, validation_parser_2, validation_rules_2) {
+define('aurelia-validation/aurelia-validation',["require", "exports", "./get-target-dom-element", "./property-info", "./property-accessor-parser", "./validate-binding-behavior", "./validate-event", "./validate-result", "./validate-trigger", "./validation-controller", "./validation-controller-factory", "./validation-errors-custom-attribute", "./validation-renderer-custom-attribute", "./validator", "./implementation/rules", "./implementation/standard-validator", "./implementation/validation-messages", "./implementation/validation-message-parser", "./implementation/validation-rules", "aurelia-pal", "./validator", "./implementation/standard-validator", "./implementation/validation-message-parser", "./property-accessor-parser", "./implementation/validation-rules"], function (require, exports, get_target_dom_element_1, property_info_1, property_accessor_parser_1, validate_binding_behavior_1, validate_event_1, validate_result_1, validate_trigger_1, validation_controller_1, validation_controller_factory_1, validation_errors_custom_attribute_1, validation_renderer_custom_attribute_1, validator_1, rules_1, standard_validator_1, validation_messages_1, validation_message_parser_1, validation_rules_1, aurelia_pal_1, validator_2, standard_validator_2, validation_message_parser_2, property_accessor_parser_2, validation_rules_2) {
     "use strict";
     function __export(m) {
         for (var p in m) if (!exports.hasOwnProperty(p)) exports[p] = m[p];
@@ -22671,7 +22906,9 @@ define('aurelia-validation/aurelia-validation',["require", "exports", "./get-tar
     Object.defineProperty(exports, "__esModule", { value: true });
     __export(get_target_dom_element_1);
     __export(property_info_1);
+    __export(property_accessor_parser_1);
     __export(validate_binding_behavior_1);
+    __export(validate_event_1);
     __export(validate_result_1);
     __export(validate_trigger_1);
     __export(validation_controller_1);
@@ -22682,7 +22919,7 @@ define('aurelia-validation/aurelia-validation',["require", "exports", "./get-tar
     __export(rules_1);
     __export(standard_validator_1);
     __export(validation_messages_1);
-    __export(validation_parser_1);
+    __export(validation_message_parser_1);
     __export(validation_rules_1);
     /**
      * Aurelia Validation Configuration API
@@ -22713,8 +22950,9 @@ define('aurelia-validation/aurelia-validation',["require", "exports", "./get-tar
     function configure(frameworkConfig, callback) {
         // the fluent rule definition API needs the parser to translate messages
         // to interpolation expressions.
-        var parser = frameworkConfig.container.get(validation_parser_2.ValidationParser);
-        validation_rules_2.ValidationRules.initialize(parser);
+        var messageParser = frameworkConfig.container.get(validation_message_parser_2.ValidationMessageParser);
+        var propertyParser = frameworkConfig.container.get(property_accessor_parser_2.PropertyAccessorParser);
+        validation_rules_2.ValidationRules.initialize(messageParser, propertyParser);
         // configure...
         var config = new AureliaValidationConfiguration();
         if (callback instanceof Function) {
