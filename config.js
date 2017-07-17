@@ -31,6 +31,7 @@ require.config({
     "babel": "node_modules/requirejs-babel/babel-5.8.34.min",
     //"i18next": "node_modules/i18next/dist/umd/i18next.min",
     // "breeze": "node_modules/breeze-client/build/breeze.min"
+    "split": "node_modules/split.js/split",
     "x2js": "node_modules/x2js/x2js",
   },
   packages: [
@@ -58,8 +59,13 @@ require.config({
       name: 'aurelia-validation',
       location: 'node_modules/aurelia-validation/dist/amd',
       main : 'aurelia-validation'
-    },
+    },    
   ],
+  shim: {
+    "split": {
+      exports: 'Split'
+    }
+  },  
   config: {
     es6: { stage: 0 }
   }
