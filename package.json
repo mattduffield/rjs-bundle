@@ -53,10 +53,11 @@
     "aurelia-templating-resources": "^1.4.0",
     "aurelia-templating-router": "^1.1.0",
     "aurelia-validation": "^1.1.1",
+    "azure-storage": "^2.2.1",
     "breeze-client": "^1.5.6",
     "requirejs": "^2.2.0",
     "requirejs-babel": "0.0.9",
     "text": "github:requirejs/text",
-    "xmlToJSON": "github:metatribal/xmlToJSON"
+    "x2js": "^3.1.1"
   }
 }
