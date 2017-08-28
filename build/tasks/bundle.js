@@ -14,6 +14,7 @@ gulp.task('bundle-aurelia', done => {
     rawText: {
       'aurelia-manifest': `
         define([
+          "aurelia-animator-css",
           "aurelia-binding",
           "aurelia-bootstrapper",
           "aurelia-dependency-injection",
@@ -44,7 +45,6 @@ gulp.task('bundle-aurelia', done => {
           // "aurelia-i18n",
           "aurelia-validation",
           // "aurelia-ui-virtualization"
-          "azure-storage",
           "x2js"
         ], function() {});`
     },

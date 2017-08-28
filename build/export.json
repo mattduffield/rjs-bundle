@@ -14,7 +14,13 @@
     "node_modules/requirejs-babel/es6.js",
     "node_modules/requirejs-babel/babel-5.8.34.min.js",
 
+    "node_modules/jwt-decode/build/jwt-decode.js",
+
+    "node_modules/split.js/split.js",
+
     "node_modules/i18next/dist/umd/i18next.min.js",
+
+    "node_modules/aurelia-animator-css/dist/amd/*",
 
     "node_modules/aurelia-breeze/dist/amd/*",
     "node_modules/aurelia-fetch-client/dist/amd/*",
