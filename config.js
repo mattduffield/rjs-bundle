@@ -1,6 +1,7 @@
 require.config({
   baseUrl: ".",
   paths: {
+    "aurelia-animator-css": "node_modules/aurelia-animator-css/dist/amd/aurelia-animator-css",    
     "aurelia-binding": "node_modules/aurelia-binding/dist/amd/aurelia-binding",
     "aurelia-bootstrapper": "node_modules/aurelia-bootstrapper/dist/amd/aurelia-bootstrapper",
     //"aurelia-breeze": "node_modules/aurelia-breeze/dist/amd/aurelia-breeze",
